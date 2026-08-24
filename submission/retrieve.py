@@ -2,7 +2,7 @@ from typing import List, Optional, Tuple
 
 from submission.corpus_utils import load_corpus
 from submission.indexer import InvertedIndex
-from submission import bm25, boolean_vsm
+from submission import custom_scorer
 
 _INDEX: Optional[InvertedIndex] = None
 
@@ -19,18 +19,11 @@ def load_index(index_dir: str) -> None:
     global _INDEX
 
     _INDEX = InvertedIndex.load(index_dir)
-
-    bm25.build(_INDEX)
-    boolean_vsm.build(_INDEX)
+    custom_scorer.build(_INDEX)
 
 
 def retrieve(query: str, k: int = 10) -> List[Tuple[str, float]]:
     if _INDEX is None:
         raise RuntimeError("load_index() must be called before retrieve().")
 
-    return bm25.score(
-        query=query,
-        k=k,
-        k1=1.2,
-        b=0.75
-    )
+    return custom_scorer.score(query, k)
