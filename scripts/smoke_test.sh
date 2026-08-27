@@ -1,18 +1,26 @@
 #!/usr/bin/env bash
-# Run the same checks CI runs, locally, before you push.
+
 set -euo pipefail
+
 cd "$(dirname "$0")/.."
 
+PYTHON=python
+
 echo "== Interface conformance tests =="
-pytest tests/test_interface_conformance.py -v
+
+$PYTHON -m pytest tests/test_interface_conformance.py -v
 
 echo
+
 echo "== Metrics unit tests =="
-pytest tests/test_metrics.py -v
+
+$PYTHON -m pytest tests/test_metrics.py -v
 
 echo
+
 echo "== Full harness run on the toy set =="
-python -m harness.run_harness \
+
+$PYTHON -m harness.run_harness \
   --corpus data/toy/corpus.jsonl \
   --queries data/toy/queries_dev.tsv \
   --qrels data/toy/qrels_dev.txt \
@@ -21,4 +29,5 @@ python -m harness.run_harness \
   --report-out runs/dev_report.json
 
 echo
+
 echo "All smoke checks passed."
