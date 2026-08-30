@@ -15,7 +15,7 @@ _INDEX_FILENAME = "inverted_index.pkl.gz"
 _STEMMER = PorterStemmer()
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
-PREFIX_BASE_TOKENS = 16
+PREFIX_BASE_TOKENS = 8
 
 
 _STOPWORDS = {

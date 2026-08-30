@@ -17,18 +17,20 @@ _BM25_LENGTH_NORM: Dict[str, float] = {}
 
 
 K1 = 2.4
-B = 0.60
+B = 0.55
 
-CANDIDATE_K = 100
+CANDIDATE_K = 150
 
 VSM_WEIGHT = 0.225
-COVERAGE_WEIGHT = 0.15
+COVERAGE_WEIGHT = 0.18
 RARE_WEIGHT = 0.05
+
+BODY_COORD_WEIGHT = 0.05
 
 PREFIX_WEIGHT = 0.13
 PREFIX_COORD_WEIGHT = 0.14
 
-PREFIX_BM25_WEIGHT = 0.15
+PREFIX_BM25_WEIGHT = 0.16
 PREFIX_K1 = 1.2
 
 
@@ -556,6 +558,11 @@ def score(
             rare_coverage = 0.0
             prefix_rare_coverage = 0.0
 
+        body_coordination = (
+            coverage
+            * rare_coverage
+        )
+
         prefix_coverage = (
             prefix_matched_terms_get(
                 doc_id,
@@ -590,6 +597,8 @@ def score(
             * coverage
             + RARE_WEIGHT
             * rare_coverage
+            + BODY_COORD_WEIGHT
+            * body_coordination
             + PREFIX_WEIGHT
             * prefix_rare_coverage
             + PREFIX_COORD_WEIGHT
