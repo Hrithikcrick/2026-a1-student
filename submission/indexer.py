@@ -1,4 +1,4 @@
-import gzip
+import bz2
 import os
 import pickle
 import re
@@ -10,7 +10,7 @@ from typing import Dict, List, Tuple
 from nltk.stem import PorterStemmer
 
 
-_INDEX_FILENAME = "inverted_index.pkl.gz"
+_INDEX_FILENAME = "inverted_index.pkl.bz2"
 
 _STEMMER = PorterStemmer()
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -483,10 +483,10 @@ class InvertedIndex:
             _INDEX_FILENAME,
         )
 
-        with gzip.open(
+        with bz2.open(
             path,
             "wb",
-            compresslevel=1,
+            compresslevel=5,
         ) as f:
 
             pickle.dump(
@@ -507,7 +507,7 @@ class InvertedIndex:
             _INDEX_FILENAME,
         )
 
-        with gzip.open(
+        with bz2.open(
             path,
             "rb",
         ) as f:

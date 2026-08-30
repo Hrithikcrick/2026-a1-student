@@ -22,3 +22,5 @@ rank_bm25>=0.2.2
 # standard TREC tool. Not required.
 # pytrec_eval>=0.5
 nltk
+
+numpy==2.4.6
