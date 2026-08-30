@@ -13,103 +13,24 @@ from nltk.stem import PorterStemmer
 _INDEX_FILENAME = "inverted_index.pkl.gz"
 
 _STEMMER = PorterStemmer()
-
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 PREFIX_BASE_TOKENS = 16
 
 
 _STOPWORDS = {
-    "a",
-    "an",
-    "and",
-    "are",
-    "as",
-    "at",
-    "be",
-    "been",
-    "being",
-    "but",
-    "by",
-    "can",
-    "could",
-    "did",
-    "do",
-    "does",
-    "doing",
-    "for",
-    "from",
-    "had",
-    "has",
-    "have",
-    "having",
-    "he",
-    "her",
-    "hers",
-    "him",
-    "his",
-    "how",
-    "i",
-    "if",
-    "in",
-    "into",
-    "is",
-    "it",
-    "its",
-    "itself",
-    "may",
-    "might",
-    "more",
-    "most",
-    "my",
-    "no",
-    "not",
-    "of",
-    "on",
-    "or",
-    "our",
-    "ours",
-    "out",
-    "over",
-    "she",
-    "should",
-    "so",
-    "some",
-    "such",
-    "than",
-    "that",
-    "the",
-    "their",
-    "theirs",
-    "them",
-    "themselves",
-    "then",
-    "there",
-    "these",
-    "they",
-    "this",
-    "those",
-    "through",
-    "to",
-    "under",
-    "up",
-    "very",
-    "was",
-    "we",
-    "were",
-    "what",
-    "when",
-    "where",
-    "which",
-    "while",
-    "who",
-    "why",
-    "will",
-    "with",
-    "would",
-    "you",
-    "your",
-    "yours",
+    "a", "an", "and", "are", "as", "at", "be", "been", "being",
+    "but", "by", "can", "could", "did", "do", "does", "doing",
+    "for", "from", "had", "has", "have", "having", "he", "her",
+    "hers", "him", "his", "how", "i", "if", "in", "into", "is",
+    "it", "its", "itself", "may", "might", "more", "most", "my",
+    "no", "not", "of", "on", "or", "our", "ours", "out", "over",
+    "she", "should", "so", "some", "such", "than", "that", "the",
+    "their", "theirs", "them", "themselves", "then", "there",
+    "these", "they", "this", "those", "through", "to", "under",
+    "up", "very", "was", "we", "were", "what", "when", "where",
+    "which", "while", "who", "why", "will", "with", "would",
+    "you", "your", "yours",
 }
 
 
@@ -132,37 +53,30 @@ _COMPOUND_REPLACEMENTS = {
 }
 
 
+_COMPOUND_RE = re.compile(
+    "|".join(
+        re.escape(key)
+        for key in sorted(
+            _COMPOUND_REPLACEMENTS,
+            key=len,
+            reverse=True,
+        )
+    )
+)
+
+
 _ALIAS_TERMS = {
-    "sarscov2": [
-        "coronavirus",
-        "sars",
-        "cov",
-    ],
-    "covid19": [
-        "covid",
-        "coronavirus",
-    ],
-    "2019ncov": [
-        "ncov",
-        "coronavirus",
-    ],
-    "coronavirus": [
-        "covid19",
-    ],
-    "mrna": [
-        "messenger",
-        "rna",
-    ],
-    "tcell": [
-        "cell",
-    ],
-    "bcell": [
-        "cell",
-    ],
+    "sarscov2": ["coronavirus", "sars", "cov"],
+    "covid19": ["covid", "coronavirus"],
+    "2019ncov": ["ncov", "coronavirus"],
+    "coronavirus": ["covid19"],
+    "mrna": ["messenger", "rna"],
+    "tcell": ["cell"],
+    "bcell": ["cell"],
 }
 
 
-@lru_cache(maxsize=200000)
+@lru_cache(maxsize=300000)
 def _stem(token: str) -> str:
     return _STEMMER.stem(token)
 
@@ -170,30 +84,12 @@ def _stem(token: str) -> str:
 def _prepare_text(text: str) -> str:
     text = text.lower()
 
-    for source, target in _COMPOUND_REPLACEMENTS.items():
-        text = text.replace(
-            source,
-            target,
-        )
-
-    return text
-
-
-def _expanded_token(token: str) -> List[str]:
-    result = [
-        _stem(token)
-    ]
-
-    aliases = _ALIAS_TERMS.get(token)
-
-    if aliases:
-        for alias in aliases:
-            if alias not in _STOPWORDS:
-                result.append(
-                    _stem(alias)
-                )
-
-    return result
+    return _COMPOUND_RE.sub(
+        lambda match: _COMPOUND_REPLACEMENTS[
+            match.group(0)
+        ],
+        text,
+    )
 
 
 def tokenize(text: str) -> List[str]:
@@ -207,40 +103,196 @@ def tokenize(text: str) -> List[str]:
         if token in _STOPWORDS:
             continue
 
-        output.extend(
-            _expanded_token(token)
-        )
+        output.append(_stem(token))
+
+        aliases = _ALIAS_TERMS.get(token)
+
+        if aliases:
+            for alias in aliases:
+                if alias not in _STOPWORDS:
+                    output.append(
+                        _stem(alias)
+                    )
 
     return output
 
 
-def _tokenize_with_prefix(
-    text: str
-) -> Tuple[List[str], List[str]]:
+def _analyse_document(
+    text: str,
+) -> Tuple[Counter, Counter, int]:
 
     text = _prepare_text(text)
 
     raw_tokens = _TOKEN_RE.findall(text)
 
-    output = []
-    prefix = []
+    full_counts = Counter()
+    prefix_counts = Counter()
 
+    expanded_length = 0
     content_position = 0
 
     for token in raw_tokens:
         if token in _STOPWORDS:
             continue
 
-        expanded = _expanded_token(token)
+        stemmed = _stem(token)
 
-        output.extend(expanded)
+        full_counts[stemmed] += 1
+        expanded_length += 1
 
-        if content_position < PREFIX_BASE_TOKENS:
-            prefix.extend(expanded)
+        in_prefix = (
+            content_position
+            < PREFIX_BASE_TOKENS
+        )
+
+        if in_prefix:
+            prefix_counts[stemmed] += 1
+
+        aliases = _ALIAS_TERMS.get(token)
+
+        if aliases:
+            for alias in aliases:
+                if alias in _STOPWORDS:
+                    continue
+
+                alias_stem = _stem(alias)
+
+                full_counts[alias_stem] += 1
+                expanded_length += 1
+
+                if in_prefix:
+                    prefix_counts[
+                        alias_stem
+                    ] += 1
 
         content_position += 1
 
-    return output, prefix
+    return (
+        full_counts,
+        prefix_counts,
+        expanded_length,
+    )
+
+
+def _write_varint(
+    buffer: bytearray,
+    value: int,
+) -> None:
+
+    while value >= 128:
+        buffer.append(
+            (value & 127) | 128
+        )
+        value >>= 7
+
+    buffer.append(value)
+
+
+def _pack_postings(
+    postings,
+    doc_to_int,
+):
+
+    packed = {}
+
+    for term, posting in postings.items():
+
+        buffer = bytearray()
+
+        previous_doc = -1
+
+        for doc_id, tf in posting.items():
+
+            integer_doc = doc_to_int[
+                doc_id
+            ]
+
+            gap = (
+                integer_doc
+                - previous_doc
+            )
+
+            _write_varint(
+                buffer,
+                gap,
+            )
+
+            _write_varint(
+                buffer,
+                int(tf),
+            )
+
+            previous_doc = integer_doc
+
+        packed[term] = bytes(buffer)
+
+    return packed
+
+
+def _unpack_postings(
+    packed_postings,
+    doc_ids,
+):
+
+    result = {}
+
+    for term, data in packed_postings.items():
+
+        posting = {}
+
+        position = 0
+        data_length = len(data)
+
+        previous_doc = -1
+
+        while position < data_length:
+
+            gap = 0
+            shift = 0
+
+            while True:
+                byte = data[position]
+                position += 1
+
+                gap |= (
+                    byte & 127
+                ) << shift
+
+                if byte < 128:
+                    break
+
+                shift += 7
+
+            tf = 0
+            shift = 0
+
+            while True:
+                byte = data[position]
+                position += 1
+
+                tf |= (
+                    byte & 127
+                ) << shift
+
+                if byte < 128:
+                    break
+
+                shift += 7
+
+            integer_doc = (
+                previous_doc
+                + gap
+            )
+
+            posting[
+                doc_ids[integer_doc]
+            ] = tf
+
+            previous_doc = integer_doc
+
+        result[term] = posting
+
+    return result
 
 
 class InvertedIndex:
@@ -268,7 +320,6 @@ class InvertedIndex:
         ] = {}
 
         self.N: int = 0
-
         self.avg_doc_len: float = 0.0
 
 
@@ -277,44 +328,36 @@ class InvertedIndex:
         corpus: List[Tuple[str, str]],
     ) -> None:
 
-        postings: Dict[
-            str,
-            Dict[str, int]
-        ] = {}
+        postings = {}
+        prefix_postings = {}
 
-        prefix_postings: Dict[
-            str,
-            Dict[str, int]
-        ] = {}
-
-        doc_len: Dict[
-            str,
-            int
-        ] = {}
+        doc_len = {}
 
         total_doc_len = 0
 
+        postings_get = postings.get
+
+        prefix_postings_get = (
+            prefix_postings.get
+        )
+
         for doc_id, text in corpus:
 
-            tokens, prefix_tokens = (
-                _tokenize_with_prefix(text)
-            )
-
-            length = len(tokens)
+            (
+                term_counts,
+                prefix_counts,
+                length,
+            ) = _analyse_document(text)
 
             doc_len[doc_id] = length
 
             total_doc_len += length
 
-            term_counts = Counter(tokens)
-
-            prefix_counts = Counter(
-                prefix_tokens
-            )
-
             for term, tf in term_counts.items():
 
-                posting = postings.get(term)
+                posting = postings_get(
+                    term
+                )
 
                 if posting is None:
                     postings[term] = {
@@ -325,8 +368,10 @@ class InvertedIndex:
 
             for term, tf in prefix_counts.items():
 
-                posting = prefix_postings.get(
-                    term
+                posting = (
+                    prefix_postings_get(
+                        term
+                    )
                 )
 
                 if posting is None:
@@ -348,10 +393,9 @@ class InvertedIndex:
 
         self.N = len(corpus)
 
-        if self.N > 0:
+        if self.N:
             self.avg_doc_len = (
-                total_doc_len
-                / self.N
+                total_doc_len / self.N
             )
         else:
             self.avg_doc_len = 0.0
@@ -368,42 +412,6 @@ class InvertedIndex:
                 {},
             )
         )
-
-
-    def _compact(
-        self,
-        postings,
-        doc_to_int,
-    ):
-
-        compact = {}
-
-        for term, posting in postings.items():
-
-            integer_doc_ids = array(
-                "I",
-                (
-                    doc_to_int[doc_id]
-                    for doc_id
-                    in posting.keys()
-                ),
-            )
-
-            term_frequencies = array(
-                "I",
-                (
-                    tf
-                    for tf
-                    in posting.values()
-                ),
-            )
-
-            compact[term] = (
-                integer_doc_ids,
-                term_frequencies,
-            )
-
-        return compact
 
 
     def save(
@@ -426,33 +434,48 @@ class InvertedIndex:
             in enumerate(doc_ids)
         }
 
+        max_doc_length = max(
+            self.doc_len.values(),
+            default=0,
+        )
+
+        if max_doc_length <= 65535:
+            doc_length_type = "H"
+        else:
+            doc_length_type = "I"
+
         doc_lengths = array(
-            "I",
+            doc_length_type,
             (
                 self.doc_len[doc_id]
                 for doc_id in doc_ids
             ),
         )
 
-        compact_postings = self._compact(
-            self.postings,
-            doc_to_int,
+        packed_postings = (
+            _pack_postings(
+                self.postings,
+                doc_to_int,
+            )
         )
 
-        compact_prefix_postings = self._compact(
-            self.prefix_postings,
-            doc_to_int,
+        packed_prefix_postings = (
+            _pack_postings(
+                self.prefix_postings,
+                doc_to_int,
+            )
         )
 
         state = {
+            "format_version": 2,
             "doc_ids": doc_ids,
             "doc_lengths": doc_lengths,
-            "postings": compact_postings,
-            "prefix_postings": (
-                compact_prefix_postings
-            ),
+            "postings": packed_postings,
+            "prefix_postings":
+                packed_prefix_postings,
             "N": self.N,
-            "avg_doc_len": self.avg_doc_len,
+            "avg_doc_len":
+                self.avg_doc_len,
         }
 
         path = os.path.join(
@@ -510,51 +533,26 @@ class InvertedIndex:
             )
         }
 
-        def restore_postings(
-            compact_postings
-        ):
-
-            restored = {}
-
-            for term, packed in (
-                compact_postings.items()
-            ):
-
-                integer_doc_ids, term_frequencies = (
-                    packed
-                )
-
-                posting = {}
-
-                for integer_doc_id, tf in zip(
-                    integer_doc_ids,
-                    term_frequencies,
-                ):
-
-                    doc_id = doc_ids[
-                        integer_doc_id
-                    ]
-
-                    posting[doc_id] = int(tf)
-
-                restored[term] = posting
-
-            return restored
-
-        index.postings = restore_postings(
-            state["postings"]
-        )
-
-        index.prefix_postings = (
-            restore_postings(
-                state.get(
-                    "prefix_postings",
-                    {},
-                )
+        index.postings = (
+            _unpack_postings(
+                state["postings"],
+                doc_ids,
             )
         )
 
-        index.N = state["N"]
+        index.prefix_postings = (
+            _unpack_postings(
+                state.get(
+                    "prefix_postings",
+                    {},
+                ),
+                doc_ids,
+            )
+        )
+
+        index.N = state[
+            "N"
+        ]
 
         index.avg_doc_len = state[
             "avg_doc_len"
