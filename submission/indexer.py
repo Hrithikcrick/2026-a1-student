@@ -81,6 +81,34 @@ def _stem(token: str) -> str:
     return _STEMMER.stem(token)
 
 
+@lru_cache(maxsize=300000)
+def _expand_index_token(
+    token: str,
+) -> Tuple[str, ...]:
+
+    if token in _STOPWORDS:
+        return ()
+
+    stemmed = _stem(token)
+
+    aliases = _ALIAS_TERMS.get(token)
+
+    if not aliases:
+        return (stemmed,)
+
+    expanded = [stemmed]
+
+    for alias in aliases:
+        if alias in _STOPWORDS:
+            continue
+
+        expanded.append(
+            _stem(alias)
+        )
+
+    return tuple(expanded)
+
+
 def _prepare_text(text: str) -> str:
     text = text.lower()
 
@@ -123,56 +151,44 @@ def _analyse_document(
 
     text = _prepare_text(text)
 
-    raw_tokens = _TOKEN_RE.findall(text)
+    raw_tokens = _TOKEN_RE.findall(
+        text
+    )
 
-    full_counts = Counter()
-    prefix_counts = Counter()
+    full_terms = []
+    prefix_terms = []
 
-    expanded_length = 0
+    full_extend = full_terms.extend
+    prefix_extend = prefix_terms.extend
+
+    expand = _expand_index_token
+    prefix_limit = PREFIX_BASE_TOKENS
+
     content_position = 0
 
     for token in raw_tokens:
-        if token in _STOPWORDS:
+
+        expanded = expand(token)
+
+        if not expanded:
             continue
 
-        stemmed = _stem(token)
-
-        full_counts[stemmed] += 1
-        expanded_length += 1
-
-        in_prefix = (
-            content_position
-            < PREFIX_BASE_TOKENS
+        full_extend(
+            expanded
         )
 
-        if in_prefix:
-            prefix_counts[stemmed] += 1
-
-        aliases = _ALIAS_TERMS.get(token)
-
-        if aliases:
-            for alias in aliases:
-                if alias in _STOPWORDS:
-                    continue
-
-                alias_stem = _stem(alias)
-
-                full_counts[alias_stem] += 1
-                expanded_length += 1
-
-                if in_prefix:
-                    prefix_counts[
-                        alias_stem
-                    ] += 1
+        if content_position < prefix_limit:
+            prefix_extend(
+                expanded
+            )
 
         content_position += 1
 
     return (
-        full_counts,
-        prefix_counts,
-        expanded_length,
+        Counter(full_terms),
+        Counter(prefix_terms),
+        len(full_terms),
     )
-
 
 def _write_varint(
     buffer: bytearray,
@@ -225,6 +241,61 @@ def _pack_postings(
             previous_doc = integer_doc
 
         packed[term] = bytes(buffer)
+
+    return packed
+
+
+
+def _pack_integer_postings(
+    postings,
+):
+
+    packed = {}
+
+    packed_set = packed.__setitem__
+
+    for term, posting in postings.items():
+
+        buffer = bytearray()
+        append = buffer.append
+
+        previous_doc = -1
+
+        posting_length = len(posting)
+
+        position = 0
+
+        while position < posting_length:
+
+            integer_doc = posting[position]
+            tf = posting[position + 1]
+
+            gap = integer_doc - previous_doc
+
+            if gap < 128:
+                append(gap)
+            else:
+                _write_varint(
+                    buffer,
+                    gap,
+                )
+
+            if tf < 128:
+                append(tf)
+            else:
+                _write_varint(
+                    buffer,
+                    tf,
+                )
+
+            previous_doc = integer_doc
+
+            position += 2
+
+        packed_set(
+            term,
+            bytes(buffer),
+        )
 
     return packed
 
@@ -332,22 +403,33 @@ class InvertedIndex:
         prefix_postings = {}
 
         doc_len = {}
+        doc_ids = []
 
         total_doc_len = 0
 
         postings_get = postings.get
-
         prefix_postings_get = (
             prefix_postings.get
         )
 
-        for doc_id, text in corpus:
+        doc_ids_append = doc_ids.append
+
+        for integer_doc, (
+            doc_id,
+            text,
+        ) in enumerate(corpus):
+
+            doc_ids_append(
+                doc_id
+            )
 
             (
                 term_counts,
                 prefix_counts,
                 length,
-            ) = _analyse_document(text)
+            ) = _analyse_document(
+                text
+            )
 
             doc_len[doc_id] = length
 
@@ -360,11 +442,21 @@ class InvertedIndex:
                 )
 
                 if posting is None:
-                    postings[term] = {
-                        doc_id: tf
-                    }
+
+                    postings[term] = [
+                        integer_doc,
+                        tf,
+                    ]
+
                 else:
-                    posting[doc_id] = tf
+
+                    posting.append(
+                        integer_doc
+                    )
+
+                    posting.append(
+                        tf
+                    )
 
             for term, tf in prefix_counts.items():
 
@@ -375,11 +467,21 @@ class InvertedIndex:
                 )
 
                 if posting is None:
-                    prefix_postings[term] = {
-                        doc_id: tf
-                    }
+
+                    prefix_postings[term] = [
+                        integer_doc,
+                        tf,
+                    ]
+
                 else:
-                    posting[doc_id] = tf
+
+                    posting.append(
+                        integer_doc
+                    )
+
+                    posting.append(
+                        tf
+                    )
 
         self.postings = postings
 
@@ -389,15 +491,23 @@ class InvertedIndex:
 
         self.doc_len = doc_len
 
+        self.doc_ids = doc_ids
+
+        self._integer_postings = True
+
         self.doc_text = {}
 
         self.N = len(corpus)
 
         if self.N:
+
             self.avg_doc_len = (
-                total_doc_len / self.N
+                total_doc_len
+                / self.N
             )
+
         else:
+
             self.avg_doc_len = 0.0
 
 
@@ -406,12 +516,22 @@ class InvertedIndex:
         term: str,
     ) -> int:
 
-        return len(
-            self.postings.get(
-                term,
-                {},
-            )
+        posting = self.postings.get(
+            term
         )
+
+        if posting is None:
+            return 0
+
+        if getattr(
+            self,
+            "_integer_postings",
+            False,
+        ):
+
+            return len(posting) // 2
+
+        return len(posting)
 
 
     def save(
@@ -424,15 +544,26 @@ class InvertedIndex:
             exist_ok=True,
         )
 
-        doc_ids = list(
-            self.doc_len.keys()
+        possible_doc_ids = getattr(
+            self,
+            "doc_ids",
+            None,
         )
 
-        doc_to_int = {
-            doc_id: integer_id
-            for integer_id, doc_id
-            in enumerate(doc_ids)
-        }
+        if (
+            possible_doc_ids is not None
+            and len(possible_doc_ids) == self.N
+        ):
+
+            doc_ids = list(
+                possible_doc_ids
+            )
+
+        else:
+
+            doc_ids = list(
+                self.doc_len.keys()
+            )
 
         max_doc_length = max(
             self.doc_len.values(),
@@ -452,19 +583,45 @@ class InvertedIndex:
             ),
         )
 
-        packed_postings = (
-            _pack_postings(
-                self.postings,
-                doc_to_int,
-            )
-        )
+        if getattr(
+            self,
+            "_integer_postings",
+            False,
+        ):
 
-        packed_prefix_postings = (
-            _pack_postings(
-                self.prefix_postings,
-                doc_to_int,
+            packed_postings = (
+                _pack_integer_postings(
+                    self.postings
+                )
             )
-        )
+
+            packed_prefix_postings = (
+                _pack_integer_postings(
+                    self.prefix_postings
+                )
+            )
+
+        else:
+
+            doc_to_int = {
+                doc_id: integer_id
+                for integer_id, doc_id
+                in enumerate(doc_ids)
+            }
+
+            packed_postings = (
+                _pack_postings(
+                    self.postings,
+                    doc_to_int,
+                )
+            )
+
+            packed_prefix_postings = (
+                _pack_postings(
+                    self.prefix_postings,
+                    doc_to_int,
+                )
+            )
 
         state = {
             "format_version": 2,
