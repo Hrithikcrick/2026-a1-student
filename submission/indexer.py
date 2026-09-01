@@ -714,13 +714,111 @@ class InvertedIndex:
                 )
             )
 
+        posting_terms = list(
+            packed_postings.keys()
+        )
+
+        body_lengths = array(
+            "I",
+            (
+                len(
+                    packed_postings[term]
+                )
+                for term in posting_terms
+            ),
+        )
+
+        body_blob = b"".join(
+            packed_postings[term]
+            for term in posting_terms
+        )
+
+        term_to_int = {
+            term: integer_term
+            for integer_term, term
+            in enumerate(posting_terms)
+        }
+
+        prefix_items = []
+
+        for term, data in (
+            packed_prefix_postings.items()
+        ):
+            integer_term = (
+                term_to_int.get(term)
+            )
+
+            if integer_term is None:
+                raise ValueError(
+                    "Prefix term missing from body vocabulary"
+                )
+
+            prefix_items.append(
+                (
+                    integer_term,
+                    data,
+                )
+            )
+
+        prefix_items.sort(
+            key=lambda item: item[0]
+        )
+
+        prefix_bitmap = bytearray(
+            (
+                len(posting_terms)
+                + 7
+            )
+            // 8
+        )
+
+        prefix_lengths = array(
+            "I"
+        )
+
+        prefix_parts = []
+
+        for integer_term, data in (
+            prefix_items
+        ):
+            prefix_bitmap[
+                integer_term >> 3
+            ] |= (
+                1
+                << (
+                    integer_term
+                    & 7
+                )
+            )
+
+            prefix_lengths.append(
+                len(data)
+            )
+
+            prefix_parts.append(
+                data
+            )
+
+        prefix_blob = b"".join(
+            prefix_parts
+        )
+
         state = {
-            "format_version": 3,
+            "format_version": 4,
             "doc_ids": doc_ids,
             "doc_lengths": doc_lengths,
-            "postings": packed_postings,
-            "prefix_postings":
-                packed_prefix_postings,
+            "posting_terms":
+                posting_terms,
+            "body_lengths":
+                body_lengths,
+            "body_blob":
+                body_blob,
+            "prefix_bitmap":
+                bytes(prefix_bitmap),
+            "prefix_lengths":
+                prefix_lengths,
+            "prefix_blob":
+                prefix_blob,
             "N": self.N,
             "avg_doc_len":
                 self.avg_doc_len,
@@ -786,6 +884,141 @@ class InvertedIndex:
             2,
         )
 
+        if (
+            format_version >= 4
+            and "body_blob" in state
+        ):
+            posting_terms = state[
+                "posting_terms"
+            ]
+
+            body_lengths = state[
+                "body_lengths"
+            ]
+
+            body_blob = state[
+                "body_blob"
+            ]
+
+            packed_postings = {}
+
+            position = 0
+
+            for term, length in zip(
+                posting_terms,
+                body_lengths,
+            ):
+                next_position = (
+                    position
+                    + int(length)
+                )
+
+                packed_postings[
+                    term
+                ] = body_blob[
+                    position:
+                    next_position
+                ]
+
+                position = (
+                    next_position
+                )
+
+            if position != len(
+                body_blob
+            ):
+                raise ValueError(
+                    "Invalid body posting blob"
+                )
+
+            prefix_bitmap = state[
+                "prefix_bitmap"
+            ]
+
+            prefix_lengths = state[
+                "prefix_lengths"
+            ]
+
+            prefix_blob = state[
+                "prefix_blob"
+            ]
+
+            packed_prefix_postings = {}
+
+            prefix_position = 0
+            prefix_length_position = 0
+
+            for integer_term, term in (
+                enumerate(
+                    posting_terms
+                )
+            ):
+                if not (
+                    prefix_bitmap[
+                        integer_term >> 3
+                    ]
+                    & (
+                        1
+                        << (
+                            integer_term
+                            & 7
+                        )
+                    )
+                ):
+                    continue
+
+                length = int(
+                    prefix_lengths[
+                        prefix_length_position
+                    ]
+                )
+
+                next_position = (
+                    prefix_position
+                    + length
+                )
+
+                packed_prefix_postings[
+                    term
+                ] = prefix_blob[
+                    prefix_position:
+                    next_position
+                ]
+
+                prefix_position = (
+                    next_position
+                )
+
+                prefix_length_position += 1
+
+            if (
+                prefix_position
+                != len(prefix_blob)
+            ):
+                raise ValueError(
+                    "Invalid prefix posting blob"
+                )
+
+            if (
+                prefix_length_position
+                != len(prefix_lengths)
+            ):
+                raise ValueError(
+                    "Invalid prefix posting lengths"
+                )
+
+        else:
+            packed_postings = state[
+                "postings"
+            ]
+
+            packed_prefix_postings = (
+                state.get(
+                    "prefix_postings",
+                    {},
+                )
+            )
+
         if format_version >= 3:
 
             unpacker = (
@@ -799,15 +1032,12 @@ class InvertedIndex:
             )
 
         index.postings = unpacker(
-            state["postings"],
+            packed_postings,
             doc_ids,
         )
 
         index.prefix_postings = unpacker(
-            state.get(
-                "prefix_postings",
-                {},
-            ),
+            packed_prefix_postings,
             doc_ids,
         )
 
