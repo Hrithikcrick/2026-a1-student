@@ -257,7 +257,6 @@ def _pack_integer_postings(
     for term, posting in postings.items():
 
         buffer = bytearray()
-        append = buffer.append
 
         previous_doc = -1
 
@@ -270,22 +269,30 @@ def _pack_integer_postings(
             integer_doc = posting[position]
             tf = posting[position + 1]
 
-            gap = integer_doc - previous_doc
+            gap = (
+                integer_doc
+                - previous_doc
+            )
 
-            if gap < 128:
-                append(gap)
-            else:
+            has_tf = (
+                0 if tf == 1 else 1
+            )
+
+            encoded_gap = (
+                (gap << 1)
+                | has_tf
+            )
+
+            _write_varint(
+                buffer,
+                encoded_gap,
+            )
+
+            if has_tf:
+
                 _write_varint(
                     buffer,
-                    gap,
-                )
-
-            if tf < 128:
-                append(tf)
-            else:
-                _write_varint(
-                    buffer,
-                    tf,
+                    tf - 1,
                 )
 
             previous_doc = integer_doc
@@ -298,6 +305,90 @@ def _pack_integer_postings(
         )
 
     return packed
+
+
+def _unpack_postings_compact(
+    packed_postings,
+    doc_ids,
+):
+
+    result = {}
+
+    for term, data in packed_postings.items():
+
+        posting = {}
+
+        position = 0
+        data_length = len(data)
+
+        previous_doc = -1
+
+        while position < data_length:
+
+            encoded_gap = 0
+            shift = 0
+
+            while True:
+
+                byte = data[position]
+                position += 1
+
+                encoded_gap |= (
+                    byte & 127
+                ) << shift
+
+                if byte < 128:
+                    break
+
+                shift += 7
+
+            has_tf = (
+                encoded_gap & 1
+            )
+
+            gap = (
+                encoded_gap >> 1
+            )
+
+            if has_tf:
+
+                stored_tf = 0
+                shift = 0
+
+                while True:
+
+                    byte = data[position]
+                    position += 1
+
+                    stored_tf |= (
+                        byte & 127
+                    ) << shift
+
+                    if byte < 128:
+                        break
+
+                    shift += 7
+
+                tf = stored_tf + 1
+
+            else:
+
+                tf = 1
+
+            integer_doc = (
+                previous_doc
+                + gap
+            )
+
+            posting[
+                doc_ids[integer_doc]
+            ] = tf
+
+            previous_doc = integer_doc
+
+        result[term] = posting
+
+    return result
 
 
 def _unpack_postings(
@@ -624,7 +715,7 @@ class InvertedIndex:
             )
 
         state = {
-            "format_version": 2,
+            "format_version": 3,
             "doc_ids": doc_ids,
             "doc_lengths": doc_lengths,
             "postings": packed_postings,
@@ -690,21 +781,34 @@ class InvertedIndex:
             )
         }
 
-        index.postings = (
-            _unpack_postings(
-                state["postings"],
-                doc_ids,
-            )
+        format_version = state.get(
+            "format_version",
+            2,
         )
 
-        index.prefix_postings = (
-            _unpack_postings(
-                state.get(
-                    "prefix_postings",
-                    {},
-                ),
-                doc_ids,
+        if format_version >= 3:
+
+            unpacker = (
+                _unpack_postings_compact
             )
+
+        else:
+
+            unpacker = (
+                _unpack_postings
+            )
+
+        index.postings = unpacker(
+            state["postings"],
+            doc_ids,
+        )
+
+        index.prefix_postings = unpacker(
+            state.get(
+                "prefix_postings",
+                {},
+            ),
+            doc_ids,
         )
 
         index.N = state[
