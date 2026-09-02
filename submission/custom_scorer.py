@@ -399,9 +399,6 @@ def score(
     _QUERY_GENERATION += 1
     generation = _QUERY_GENERATION
 
-    touched: List[int] = []
-    touched_append = touched.append
-
     active_terms = []
 
     query_norm_squared = 0.0
@@ -468,10 +465,6 @@ def score(
             bm25_acc[new_docs] = 0.0
             dot_acc[new_docs] = 0.0
 
-            touched.extend(
-                new_docs.tolist()
-            )
-
         bm25_acc[docs] += (
             bm25_multiplier
             * tfs
@@ -496,13 +489,12 @@ def score(
                 generation
             )
 
-    if not touched:
-        return []
-
-    touched_array = np.asarray(
-        touched,
-        dtype=np.int32,
+    touched_array = np.flatnonzero(
+        touch_stamp == generation
     )
+
+    if touched_array.size == 0:
+        return []
 
     bm25_values = bm25_acc[
         touched_array
